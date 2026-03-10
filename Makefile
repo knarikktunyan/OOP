@@ -3,9 +3,11 @@ CXXFLAGS = -std=c++17 -Wall -Wextra
 
 TARGET1 = method1
 TARGET2 = method2
+TARGET3 = method3
 
 SRC1 = ex_1.cpp
 SRC2 = ex_2.cpp
+SRC3 = ex_3.cpp
 
 all: $(TARGET1) $(TARGET2) $(TARGET3)
 
