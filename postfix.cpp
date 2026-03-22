@@ -1,10 +1,9 @@
 #include <iostream>
 #include <stack>
 #include <string>
-#include <cctype>
 
-int check_priority(char operand) {
-    switch(operand) {
+int getPrecedence(char op) {
+    switch(op) {
         case '+':
         case '-': return 1;
         case '*':
@@ -13,79 +12,82 @@ int check_priority(char operand) {
     }
 }
 
-int evaluate(std::string &text) {
-    std::stack<int> st;
+int runPostfix(std::string &postfixExpr) {
+    std::stack<int> operands;
+    int length = postfixExpr.size();
 
-    for(int i = 0; i < text.size(); ++i) {
-        if (isdigit(text[i])) {
-            st.push(text[i] - '0');
-        } 
+    for(int i = 0; i < length; ++i) {
+        if (isdigit(postfixExpr[i])) {
+            operands.push(postfixExpr[i] - '0');
+        }
         else {
-            // Check if stack has at least 2 elements to prevent Seg Fault
-            if (st.size() < 2) continue; 
+            int val2 = operands.top();
+            operands.pop();
+            int val1 = operands.top();
+            operands.pop();
 
-            int right = st.top(); st.pop(); 
-            int left = st.top(); st.pop(); 
-            switch(text[i]) {
-                case '+': st.push(left + right); break;
-                case '-': st.push(left - right); break;
-                case '*': st.push(left * right); break;
-                case '/': 
-                    if (right == 0) return 0; 
-                    st.push(left / right); 
-                    break;
+            switch(postfixExpr[i]) {
+                case '+': operands.push(val1 + val2); break;
+                case '-': operands.push(val1 - val2); break;
+                case '*': operands.push(val1 * val2); break;
+                case '/': operands.push(val1 / val2); break;
             }
         }
     }
-    return st.empty() ? 0 : st.top();
+    return operands.top();
 }
 
-void postfix_eval(std::string &math_exp, std::string &text) {
-    std::stack<char> st;
-    
-    for(int i = 0; i < math_exp.size(); ++i) {
-        char c = math_exp[i];
+void convertToPostfix(std::string &infixIn, std::string &postfixOut) {
+    std::stack<char> opStack;
+    int limit = infixIn.size();
 
-        if (isdigit(c)) {
-            text.push_back(c);
+    for(int i = 0; i < limit; ++i) {
+        char current = infixIn[i];
+
+        if(current == '(') {
+            opStack.push(current);
         }
-        else if (c == '(') {
-            st.push(c);
+        else if (isdigit(current)) {
+            postfixOut.push_back(current);
         }
-        else if (c == ')') {
-            while(!st.empty() && st.top() != '(') {
-                text.push_back(st.top());
-                st.pop();
+        else if (current == ')') {
+            while(!opStack.empty() && opStack.top() != '(') {
+                char topOp = opStack.top();
+                opStack.pop();
+                postfixOut.push_back(topOp);
             }
-            if (!st.empty()) st.pop(); // Remove '('
+            if(!opStack.empty()) opStack.pop();
         }
         else {
-            int current_prior = check_priority(c);
-            while(!st.empty() && st.top() != '(' && 
-                  check_priority(st.top()) >= current_prior) {
-                text.push_back(st.top());
-                st.pop();
+            if (opStack.empty()) {
+                opStack.push(current);
+            } else {
+                int p_current = getPrecedence(current);
+                while(!opStack.empty() && opStack.top() != '(' && 
+                      p_current <= getPrecedence(opStack.top())) {
+                    postfixOut.push_back(opStack.top());
+                    opStack.pop();
+                }
+                opStack.push(current);
             }
-            st.push(c);
         }
     }
-
-    while(!st.empty()) {
-        if (st.top() != '(') text.push_back(st.top());
-        st.pop();
+    
+    while(!opStack.empty()) {
+        postfixOut.push_back(opStack.top());
+        opStack.pop();
     }
 }
 
 int main() {
-    std::string math_exp;
-    std::string text = "";
+    std::string rawInput;
+    std::string processedOutput = "";
     
-    std::cout << "Input the expression ";
-    std::cin >> math_exp;
+    std::cout << "Enter expression: ";
+    std::cin >> rawInput;
     
-    postfix_eval(math_exp, text);
-    std::cout << "Postfix notation: " << text << "\n";
-    std::cout << "The result is: " << evaluate(text) << "\n";
-
+    convertToPostfix(rawInput, processedOutput);
+    std::cout << "Result: " << runPostfix(processedOutput) << "\n";
+    
     return 0;
 }
