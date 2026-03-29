@@ -1,19 +1,39 @@
+// #pragma once
+
+// enum Operator
+// {
+// 	Add,
+// 	Sub,
+// 	Div,
+// 	Mult
+// };
+
+// enum NodeType
+// {
+// 	Num,
+// 	Var,
+// 	EofEx,
+// 	OpBr,
+// 	ClBr,
+// 	Op
+// };
+
 #pragma once
 
 enum Operator
 {
-	Add,
-	Sub,
-	Div,
-	Mult
+    Add,
+    Sub,
+    Div,
+    Mult
 };
 
 enum NodeType
 {
-	Num,
-	Var,
-	EofEx,
-	OpBr,
-	ClBr,
-	Op
+    Num,
+    Var,
+    EofEx,
+    OpBr,
+    ClBr,
+    Op
 };
