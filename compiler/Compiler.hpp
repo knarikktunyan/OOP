@@ -1,18 +1,33 @@
 #pragma once
 #include "../parser/NodeType.hpp"
+#include "../parser/Node.hpp"
 #include <vector>
+#include <cstdint>
+
+
+// bytecode operations
+enum OpCode
+{
+    LOAD_NUM,
+    LOAD_VAR,
+    ADD,
+    SUB,
+    MUL,
+    DIV
+};
+
 
 struct Instruction
 {
-    Operator op;
+    OpCode op;
     int dest;
-    int left;
-    int right;
+    intptr_t left;
+    intptr_t right;
 };
 
 struct VM
 {
-    int regs[100] = {0}; // KEEP SAME
+    int regs[100] = {0};
     int next = 0;
 };
 

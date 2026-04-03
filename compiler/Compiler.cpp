@@ -5,18 +5,18 @@
 
 int compile(Node* node, std::vector<Instruction>& prog, VM& vm)
 {
-    if (node->type == NodeType::Num)
+    if (node->type == Num)
     {
-        int regIndex = vm.next++;
-        vm.regs[regIndex] = node->value;
-        return regIndex;
+        int r = vm.next++;
+        prog.push_back({LOAD_NUM, r, node->value, 0});
+        return r;
     }
 
-    if (node->type == NodeType::Var)
+    if (node->type == Var)
     {
-        int regIndex = vm.next++;
-        vm.regs[regIndex] = *(node->ptr);
-        return regIndex;
+        int r = vm.next++;
+        prog.push_back({LOAD_VAR, r, (intptr_t)(node->ptr), 0});
+        return r;
     }
 
     int leftReg  = compile(node->left, prog, vm);
@@ -24,9 +24,15 @@ int compile(Node* node, std::vector<Instruction>& prog, VM& vm)
 
     int destReg = vm.next++;
 
-    Operator op = node->op;
+    OpCode op;
+    switch (node->op)
+    {
+        case Add:  op = ADD; break;
+        case Sub:  op = SUB; break;
+        case Mult: op = MUL; break;
+        case Div:  op = DIV; break;
+    }
 
     prog.push_back({op, destReg, leftReg, rightReg});
-
     return destReg;
 }
