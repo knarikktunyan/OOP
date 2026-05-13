@@ -6,6 +6,7 @@
 #include "WhileNode.hpp"
 #include "Node.hpp"
 
+#include <stdexcept>
 #include <utility>
 
 namespace vl {
@@ -62,6 +63,7 @@ int Name::eval(Vm& vm) {
 int Bin::eval(Vm& vm) {
     const int l = l_->eval(vm);
     const int r = r_->eval(vm);
+
     switch (op_) {
         case Bop::add:
             return l + r;
@@ -91,11 +93,13 @@ int Bin::eval(Vm& vm) {
         case Bop::bor:
             return (l != 0 || r != 0) ? 1 : 0;
     }
+
     return 0;
 }
 
 int Un::eval(Vm& vm) {
     const int v = x_->eval(vm);
+
     switch (op_) {
         case Uop::neg:
             return -v;
@@ -104,6 +108,7 @@ int Un::eval(Vm& vm) {
         case Uop::Not:
             return v == 0 ? 1 : 0;
     }
+
     return v;
 }
 
@@ -119,17 +124,21 @@ void ExprStmt::exec(Vm& vm) {
 
 void Var::exec(Vm& vm) {
     int v = 0;
+
     if (init_) {
         v = init_->eval(vm);
     }
+
     vm.def(id_, v);
 }
 
 void Ret::exec(Vm& vm) {
     int v = 0;
+
     if (x_) {
         v = x_->eval(vm);
     }
+
     throw RetEx(v);
 }
 
@@ -170,22 +179,28 @@ int Vm::get(const std::string& n) const {
 
 int Vm::call(const std::string& n, const std::vector<int>& args) {
     FuncNode* f = find_fn(n);
+
     if (!f) {
         throw std::runtime_error("no fn: " + n);
     }
+
     if (f->params().size() != args.size()) {
         throw std::runtime_error("arity: " + n);
     }
+
     enter();
+
     for (std::size_t i = 0; i < args.size(); ++i) {
         def(f->params()[i], args[i]);
     }
+
     try {
         f->body()->exec(*this);
     } catch (const RetEx& e) {
         leave();
         return e.v;
     }
+
     leave();
     return 0;
 }
