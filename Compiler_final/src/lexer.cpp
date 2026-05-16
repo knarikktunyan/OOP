@@ -1,91 +1,64 @@
-#include "Token.hpp"
-#include <cctype>
+#include "../include/ast-node.hpp"
 
-namespace vl {
-
-static bool id0(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
-
-static bool id1(char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; }
-
-std::vector<RawLex> scan_raw(const std::string& src) {
-    std::vector<RawLex> out;
-    std::size_t i = 0;
-    int line = 1;
-    int col = 1;
-
-    auto bump = [&]() -> char {
-        if (i >= src.size()) {
-            return '\0';
-        }
-        char c = src[i++];
-        if (c == '\n') {
-            ++line;
-            col = 1;
-        } else {
-            ++col;
-        }
-        return c;
-    };
-
-    auto peek = [&](std::size_t a = 0) -> char {
-        std::size_t p = i + a;
-        return p < src.size() ? src[p] : '\0';
-    };
-
-    while (i < src.size()) {
-        char c = peek();
-        if (c == '\0') {
-            break;
-        }
-        if (std::isspace(static_cast<unsigned char>(c))) {
-            bump();
-            continue;
-        }
-        if (c == '/' && peek(1) == '/') {
-            bump();
-            bump();
-            while (peek() && peek() != '\n') {
-                bump();
-            }
-            continue;
-        }
-
-        const int ln = line;
-        const int cl = col;
-
-        if (std::isdigit(static_cast<unsigned char>(c))) {
-            std::string s;
-            while (std::isdigit(static_cast<unsigned char>(peek()))) {
-                s.push_back(bump());
-            }
-            out.push_back({s, ln, cl});
-            continue;
-        }
-
-        if (id0(c)) {
-            std::string s;
-            s.push_back(bump());
-            while (id1(peek())) {
-                s.push_back(bump());
-            }
-            out.push_back({s, ln, cl});
-            continue;
-        }
-
-        std::string two;
-        two.push_back(c);
-        two.push_back(peek(1));
-        if (two == "==" || two == "!=" || two == "<=" || two == ">=" || two == "&&" || two == "||") {
-            bump();
-            bump();
-            out.push_back({two, ln, cl});
-            continue;
-        }
-
-        std::string one(1, bump());
-        out.push_back({one, ln, cl});
-    }
-    return out;
+void readNumberLiteral(std::stringstream& line, std::vector<std::string>& words)
+{
+	std::string s;
+	while (line.peek() != EOF && std::isdigit(line.peek()))
+		s += line.get();
+	words.push_back(s);
 }
 
-}  // namespace vl
+void readIdentifier(std::stringstream& line, std::vector<std::string>& words)
+{
+	std::string s;
+	while (line.peek() != EOF && std::isalnum(line.peek()))
+		s += line.get();
+	words.push_back(s);
+}
+
+bool isArithmeticOperator(const char c)
+{
+	return c == '+' || c == '-' || c == '*' || c == '/';
+}
+
+std::vector<std::string> lexer(std::stringstream& line)
+{
+	char ch;
+	std::vector<std::string> words;
+	std::string s;
+	while (line.get(ch))
+	{
+		if (std::isspace(ch))
+			continue;
+		else if (std::isdigit(ch))
+		{
+			line.putback(ch);
+			readNumberLiteral(line, words);
+		}
+		else if (std::isalpha(ch))
+		{
+			line.putback(ch);
+			readIdentifier(line, words);
+		}
+		else if (isArithmeticOperator(ch) || ch == '(' || ch == ')' || ch == ';' || ch == '{' || ch == '}' || ch == ',')
+			words.push_back(std::string(1, ch));
+		else if (ch == '>' || ch == '<' || ch == '=')
+		{
+			words.push_back(std::string(1, ch));
+			if (line.peek() == '=')
+			{
+				line.get(ch);
+				words.back() += ch;
+			}
+		}
+		else if (ch == '!' && line.peek() == '=')
+		{
+			words.push_back(std::string(1, ch));
+			line.get(ch);
+			words.back() += ch;
+		}
+		else
+			throw std::runtime_error("unexpected input");
+	}
+	return words;
+}

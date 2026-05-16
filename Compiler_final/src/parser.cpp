@@ -1,521 +1,536 @@
-#include "Compiler.hpp"
-#include "State.hpp"
-#include "Token.hpp"
-#include "Node.hpp"
-#include "BlockNode.hpp"
-#include "IfNode.hpp"
-#include "WhileNode.hpp"
-#include "FuncNode.hpp"
-#include "CallNode.hpp"
+#include "../include/compiler-pipeline.hpp"
 
-#include <fstream>
-#include <memory>
-#include <sstream>
-#include <stdexcept>
-#include <string>
-#include <utility>
+int isInsideFunction = 0;
 
-namespace vl {
-
-static Bop toBop(Tok t) {
-    switch (t) {
-        case Tok::plus:
-            return Bop::add;
-        case Tok::minus:
-            return Bop::sub;
-        case Tok::star:
-            return Bop::mul;
-        case Tok::slash:
-            return Bop::div;
-        case Tok::eq:
-            return Bop::eq;
-        case Tok::ne:
-            return Bop::ne;
-        case Tok::lt:
-            return Bop::lt;
-        case Tok::le:
-            return Bop::le;
-        case Tok::gt:
-            return Bop::gt;
-        case Tok::ge:
-            return Bop::ge;
-        case Tok::land:
-            return Bop::band;
-        case Tok::lor:
-            return Bop::bor;
-        default:
-            throw std::runtime_error("bop");
-    }
+int getOperatorPrecedence(AstNode* node)
+{
+	if (node->name == "*" || node->name == "/")
+		return 2;
+	if (node->name == "+" || node->name == "-")
+		return 1;
+	return 0;
 }
 
-class Rd {
-public:
-    explicit Rd(Cursor c) : cur_(std::move(c)) {}
+std::unique_ptr<AstNode> parseExpression(std::vector<Token>& tokens, SymbolTable& symbolTable)
+{
+	ParserState state = ParserState::Start;
 
-    std::unique_ptr<Block> root() {
-        auto file = std::make_unique<Block>(false);
-        while (!cur_.end()) {
-            auto s = decl_();
-            if (!s) {
-                if (cur_.bad()) {
-                    break;
-                }
-                if (!cur_.end()) {
-                    cur_.fail("bad decl");
-                }
-                break;
-            }
-            file->push(std::move(s));
-        }
-        if (!cur_.end() && !cur_.bad()) {
-            cur_.fail("trailing");
-        }
-        return file;
-    }
+	std::stack<std::unique_ptr<AstNode>> operators;
+	std::stack<std::unique_ptr<AstNode>> operands;
 
-    bool ok() const { return !cur_.bad(); }
-    const std::string& msg() const { return cur_.err(); }
+	for (const Token& t : tokens)
+	{
+		state = EXPRESSION_PARSER_FSM[static_cast<int>(state)][static_cast<int>(t.type)];
 
-private:
-    Cursor cur_;
+		if (state == ParserState::Error)
+			throw std::runtime_error("unexpected token " + t.value);
+		if (state == ParserState::End)
+			break;
 
-    void err(const std::string& m) { cur_.fail(m); }
+		std::unique_ptr<AstNode> n = std::make_unique<AstNode>(t);
 
-    std::unique_ptr<Stmt> decl_() {
-        if (cur_.peek().k == Tok::kw_fun) {
-            return fun_();
-        }
-        if (cur_.peek().k == Tok::kw_var) {
-            return var_();
-        }
-        return stmt_();
-    }
+		if (t.type == AstNodeType::Number)
+			operands.push(std::move(n));
+		else if (t.type == AstNodeType::Variable)
+		{
+			n->symbolAddress = symbolTable.getAddress(n->name);
+			operands.push(std::move(n));
+		}
+		else if (t.type == AstNodeType::BinaryOperator || t.type == AstNodeType::Comparison)
+		{
+			while (!operators.empty() &&
+				operators.top()->type != AstNodeType::OpenParen &&
+				getOperatorPrecedence(operators.top().get()) >= getOperatorPrecedence(n.get()))
+			{
+				std::unique_ptr<AstNode> op = std::move(operators.top());
+				operators.pop();
 
-    std::unique_ptr<Stmt> fun_() {
-        cur_.next();
-        if (cur_.peek().k != Tok::id) {
-            err("fn name");
-            return nullptr;
-        }
-        std::string fname = cur_.peek().lex;
-        cur_.next();
-        cur_.need(Tok::lpar, "fn (");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        std::vector<std::string> params;
-        if (cur_.peek().k != Tok::rpar) {
-            for (;;) {
-                if (cur_.peek().k != Tok::id) {
-                    err("param");
-                    return nullptr;
-                }
-                params.push_back(cur_.peek().lex);
-                cur_.next();
-                if (cur_.eat(Tok::comma)) {
-                    continue;
-                }
-                break;
-            }
-        }
-        cur_.need(Tok::rpar, "fn )");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto body = block_(true);
-        if (!body) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(
-            std::make_unique<FuncNode>(std::move(fname), std::move(params), std::move(body)).release());
-    }
+				if (operands.size() < 2)
+					throw std::runtime_error("invalid expression");
 
-    std::unique_ptr<Stmt> var_() {
-        cur_.next();
-        if (cur_.peek().k != Tok::id) {
-            err("var name");
-            return nullptr;
-        }
-        std::string name = cur_.peek().lex;
-        cur_.next();
-        std::unique_ptr<Expr> init;
-        if (cur_.eat(Tok::assign)) {
-            init = expr_();
-            if (!init || cur_.bad()) {
-                return nullptr;
-            }
-        }
-        cur_.need(Tok::semi, "var ;");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(std::make_unique<Var>(std::move(name), std::move(init)).release());
-    }
+				std::unique_ptr<AstNode> right = std::move(operands.top()); operands.pop();
+				std::unique_ptr<AstNode> left  = std::move(operands.top()); operands.pop();
 
-    std::unique_ptr<Stmt> stmt_() {
-        switch (cur_.peek().k) {
-            case Tok::lbra: {
-                auto b = block_(false);
-                return b ? std::unique_ptr<Stmt>(b.release()) : nullptr;
-            }
-            case Tok::kw_if:
-                return if_();
-            case Tok::kw_while:
-                return wh_();
-            case Tok::kw_return:
-                return ret_();
-            case Tok::kw_print:
-                return out_();
-            case Tok::kw_var:
-                return var_();
-            default:
-                return es_();
-        }
-    }
+				op->left  = std::move(left);
+				op->right = std::move(right);
 
-    std::unique_ptr<Block> block_(bool flat) {
-        cur_.need(Tok::lbra, "{");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto b = std::make_unique<Block>(flat);
-        while (cur_.peek().k != Tok::rbra && !cur_.end()) {
-            auto s = decl_();
-            if (!s) {
-                break;
-            }
-            b->push(std::move(s));
-        }
-        cur_.need(Tok::rbra, "}");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        return b;
-    }
+				operands.push(std::move(op));
+			}
+			operators.push(std::move(n));
+		}
+		else if (t.type == AstNodeType::OpenParen)
+			operators.push(std::move(n));
+		else if (t.type == AstNodeType::CloseParen)
+		{
+			while (!operators.empty() && operators.top()->type != AstNodeType::OpenParen)
+			{
+				std::unique_ptr<AstNode> op = std::move(operators.top());
+				operators.pop();
 
-    std::unique_ptr<Stmt> if_() {
-        cur_.next();
-        cur_.need(Tok::lpar, "if (");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto c = expr_();
-        if (!c) {
-            return nullptr;
-        }
-        cur_.need(Tok::rpar, "if )");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto t = stmt_();
-        if (!t) {
-            return nullptr;
-        }
-        std::unique_ptr<Stmt> a;
-        if (cur_.eat(Tok::kw_else)) {
-            a = stmt_();
-            if (!a) {
-                return nullptr;
-            }
-        }
-        return std::unique_ptr<Stmt>(
-            std::make_unique<IfNode>(std::move(c), std::move(t), std::move(a)).release());
-    }
+				if (operands.size() < 2)
+					throw std::runtime_error("invalid expression");
 
-    std::unique_ptr<Stmt> wh_() {
-        cur_.next();
-        cur_.need(Tok::lpar, "while (");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto c = expr_();
-        if (!c) {
-            return nullptr;
-        }
-        cur_.need(Tok::rpar, "while )");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        auto body = stmt_();
-        if (!body) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(
-            std::make_unique<WhileNode>(std::move(c), std::move(body)).release());
-    }
+				std::unique_ptr<AstNode> right = std::move(operands.top()); operands.pop();
+				std::unique_ptr<AstNode> left  = std::move(operands.top()); operands.pop();
 
-    std::unique_ptr<Stmt> ret_() {
-        cur_.next();
-        std::unique_ptr<Expr> v;
-        if (cur_.peek().k != Tok::semi) {
-            v = expr_();
-            if (!v) {
-                return nullptr;
-            }
-        }
-        cur_.need(Tok::semi, "ret ;");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(std::make_unique<Ret>(std::move(v)).release());
-    }
+				op->left  = std::move(left);
+				op->right = std::move(right);
 
-    std::unique_ptr<Stmt> out_() {
-        cur_.next();
-        auto x = expr_();
-        if (!x) {
-            return nullptr;
-        }
-        cur_.need(Tok::semi, "out ;");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(std::make_unique<Out>(std::move(x)).release());
-    }
+				operands.push(std::move(op));
+			}
 
-    std::unique_ptr<Stmt> es_() {
-        auto x = expr_();
-        if (!x) {
-            return nullptr;
-        }
-        cur_.need(Tok::semi, "es ;");
-        if (cur_.bad()) {
-            return nullptr;
-        }
-        return std::unique_ptr<Stmt>(std::make_unique<ExprStmt>(std::move(x)).release());
-    }
+			if (operators.empty())
+				throw std::runtime_error("Mismatched parentheses");
 
-    std::unique_ptr<Expr> expr_() { return asg_(); }
+			operators.pop();
+		}
+	}
 
-    std::unique_ptr<Expr> asg_() {
-        if (cur_.peek().k == Tok::id && cur_.ahead(1).k == Tok::assign) {
-            std::string id = cur_.peek().lex;
-            cur_.next();
-            cur_.next();
-            auto rhs = asg_();
-            if (!rhs) {
-                return nullptr;
-            }
-            return std::make_unique<Set>(std::move(id), std::move(rhs));
-        }
-        return or_();
-    }
+	if (state != ParserState::End)
+		throw std::runtime_error("unexpected end");
 
-    std::unique_ptr<Expr> or_() {
-        auto x = and_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::lor) {
-            cur_.next();
-            auto r = and_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), Bop::bor, std::move(r));
-        }
-        return x;
-    }
+	while (!operators.empty())
+	{
+		std::unique_ptr<AstNode> op = std::move(operators.top());
+		operators.pop();
 
-    std::unique_ptr<Expr> and_() {
-        auto x = eq_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::land) {
-            cur_.next();
-            auto r = eq_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), Bop::band, std::move(r));
-        }
-        return x;
-    }
+		if (operands.size() < 2)
+			throw std::runtime_error("invalid expression");
 
-    std::unique_ptr<Expr> eq_() {
-        auto x = cmp_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::eq || cur_.peek().k == Tok::ne) {
-            Tok op = cur_.peek().k;
-            cur_.next();
-            auto r = cmp_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), toBop(op), std::move(r));
-        }
-        return x;
-    }
+		std::unique_ptr<AstNode> right = std::move(operands.top()); operands.pop();
+		std::unique_ptr<AstNode> left  = std::move(operands.top()); operands.pop();
 
-    std::unique_ptr<Expr> cmp_() {
-        auto x = term_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::lt || cur_.peek().k == Tok::le || cur_.peek().k == Tok::gt ||
-               cur_.peek().k == Tok::ge) {
-            Tok op = cur_.peek().k;
-            cur_.next();
-            auto r = term_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), toBop(op), std::move(r));
-        }
-        return x;
-    }
+		op->left  = std::move(left);
+		op->right = std::move(right);
 
-    std::unique_ptr<Expr> term_() {
-        auto x = fac_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::plus || cur_.peek().k == Tok::minus) {
-            Tok op = cur_.peek().k;
-            cur_.next();
-            auto r = fac_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), toBop(op), std::move(r));
-        }
-        return x;
-    }
+		operands.push(std::move(op));
+	}
 
-    std::unique_ptr<Expr> fac_() {
-        auto x = un_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::star || cur_.peek().k == Tok::slash) {
-            Tok op = cur_.peek().k;
-            cur_.next();
-            auto r = un_();
-            if (!r) {
-                return nullptr;
-            }
-            x = std::make_unique<Bin>(std::move(x), toBop(op), std::move(r));
-        }
-        return x;
-    }
-
-    std::unique_ptr<Expr> un_() {
-        if (cur_.eat(Tok::minus)) {
-            auto i = un_();
-            if (!i) {
-                return nullptr;
-            }
-            return std::make_unique<Un>(Uop::neg, std::move(i));
-        }
-        if (cur_.eat(Tok::plus)) {
-            auto i = un_();
-            if (!i) {
-                return nullptr;
-            }
-            return std::make_unique<Un>(Uop::pos, std::move(i));
-        }
-        if (cur_.eat(Tok::bang)) {
-            auto i = un_();
-            if (!i) {
-                return nullptr;
-            }
-            return std::make_unique<Un>(Uop::Not, std::move(i));
-        }
-        return post_();
-    }
-
-    std::unique_ptr<Expr> post_() {
-        auto x = prim_();
-        if (!x) {
-            return nullptr;
-        }
-        while (cur_.peek().k == Tok::lpar) {
-            auto* nm = dynamic_cast<Name*>(x.get());
-            if (!nm) {
-                err("call");
-                return nullptr;
-            }
-            std::string fn = nm->id();
-            cur_.next();
-            std::vector<std::unique_ptr<Expr>> args;
-            if (cur_.peek().k != Tok::rpar) {
-                for (;;) {
-                    auto a = expr_();
-                    if (!a) {
-                        return nullptr;
-                    }
-                    args.push_back(std::move(a));
-                    if (cur_.eat(Tok::comma)) {
-                        continue;
-                    }
-                    break;
-                }
-            }
-            cur_.need(Tok::rpar, "call )");
-            if (cur_.bad()) {
-                return nullptr;
-            }
-            x = std::make_unique<CallNode>(std::move(fn), std::move(args));
-        }
-        return x;
-    }
-
-    std::unique_ptr<Expr> prim_() {
-        if (cur_.peek().k == Tok::num) {
-            int v = std::stoi(cur_.peek().lex);
-            cur_.next();
-            return std::make_unique<Lit>(v);
-        }
-        if (cur_.peek().k == Tok::id) {
-            std::string id = cur_.peek().lex;
-            cur_.next();
-            return std::make_unique<Name>(std::move(id));
-        }
-        if (cur_.eat(Tok::lpar)) {
-            auto x = expr_();
-            if (!x) {
-                return nullptr;
-            }
-            cur_.need(Tok::rpar, "grp");
-            if (cur_.bad()) {
-                return nullptr;
-            }
-            return x;
-        }
-        err("prim");
-        return nullptr;
-    }
-};
-
-static ParseOut parse_go(Cursor cur) {
-    Rd p(std::move(cur));
-    ParseOut o;
-    o.ast = p.root();
-    o.err = p.msg();
-    if (!p.ok()) {
-        o.ast.reset();
-        if (o.err.empty()) {
-            o.err = "parse";
-        }
-    }
-    return o;
+	if (operands.empty())
+		throw std::runtime_error("Empty expression");
+	return std::move(operands.top());
 }
 
-ParseOut Compiler::compile(const std::string& src) {
-    return parse_go(Cursor(tokenize(src)));
+std::unique_ptr<AstNode> parseAssignment(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::Variable)
+		throw std::runtime_error("Expected variable name " + tokens[pos].value);
+	
+	if (!symbolTable.isDeclared(tokens[pos].value))
+		throw std::runtime_error("Variable " + tokens[pos].value + " is not declared");
+		
+	auto node = std::make_unique<AstNode>(AstNodeType::Assign);
+	node->left = std::make_unique<AstNode>(tokens[pos]);
+	node->left->symbolAddress = symbolTable.getAddress(tokens[pos].value);
+
+	pos++;
+
+	if (tokens[pos].type != AstNodeType::Assign)
+		throw std::runtime_error("Expected = " + tokens[pos].value);
+
+	pos++;
+
+	std::vector<Token> expr;
+	while (tokens[pos].type != AstNodeType::Semicolon)
+	{
+		if (tokens[pos].type == AstNodeType::EndOfExpression)
+			throw std::runtime_error("Expected ; " + tokens[pos].value);
+		expr.push_back(tokens[pos++]);
+	}
+	expr.push_back(Token("", AstNodeType::EndOfExpression));
+	node->right = parseExpression(expr, symbolTable);
+
+	pos++;
+	return node;
 }
 
-std::string Compiler::slurp(const std::string& path) {
-    std::ifstream in(path);
-    if (!in) {
-        throw std::runtime_error("open: " + path);
-    }
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
+std::unique_ptr<AstNode> parseIfStatement(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::If)
+		throw std::runtime_error("Expected if " + tokens[pos].value);
+	
+	pos++;
+	std::vector<Token> cond;
+	
+	if (tokens[pos].type != AstNodeType::OpenParen)
+		throw std::runtime_error("Expected ( " + tokens[pos].value);
+	
+	pos++;
+	
+	while (tokens[pos].type != AstNodeType::CloseParen)
+	{
+		if (tokens[pos].type == AstNodeType::EndOfExpression)
+			throw std::runtime_error("Missing )");
+		cond.push_back(tokens[pos++]);
+	}
+	cond.push_back(Token("", AstNodeType::EndOfExpression));
+	
+	pos++;
+	
+	auto node = std::make_unique<IfStatementNode>();
+	node->condition = parseExpression(cond, symbolTable);
+	
+	if (tokens[pos].type == AstNodeType::OpenBrace)
+		node->trueBranch = parseBlock(tokens, symbolTable, pos);
+	else
+		node->trueBranch = parseStatement(tokens, symbolTable, pos);
+	// if (tokens[pos].type != AstNodeType::OpenBrace)
+	// 	throw std::runtime_error("Expected {");
+	
+	// node->trueBranch = parseBlock(tokens, symbolTable, pos);
+	
+	if (tokens[pos].type == AstNodeType::Else)
+	{
+		pos++;
+		if (tokens[pos].type == AstNodeType::If)
+			node->falseBranch = parseIfStatement(tokens, symbolTable, pos);
+		else if (tokens[pos].type == AstNodeType::OpenBrace)
+			node->falseBranch = parseBlock(tokens, symbolTable, pos);
+		else
+			node->falseBranch = parseStatement(tokens, symbolTable, pos);
+	}
+	return node;
 }
 
-}  // namespace vl
+std::unique_ptr<AstNode> parseWhileLoop(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::While)
+		throw std::runtime_error("Expected while " + tokens[pos].value);
+	
+	pos++;
+	std::vector<Token> cond;
+	
+	if (tokens[pos].type != AstNodeType::OpenParen)
+		throw std::runtime_error("Expected ( " + tokens[pos].value);
+	
+	pos++;
+	
+	while (tokens[pos].type != AstNodeType::CloseParen)
+	{
+		if (tokens[pos].type == AstNodeType::EndOfExpression)
+			throw std::runtime_error("Expected ) " + tokens[pos].value);
+		cond.push_back(tokens[pos++]);
+	}
+	cond.push_back(Token("", AstNodeType::EndOfExpression));
+	
+	pos++;
+	
+	auto node = std::make_unique<WhileStatementNode>();
+	node->condition = parseExpression(cond, symbolTable);
+	
+	if (tokens[pos].type != AstNodeType::OpenBrace)
+		throw std::runtime_error("Expected { " + tokens[pos].value);
+	
+	node->body = parseBlock(tokens, symbolTable, pos);
+	
+	return node;
+}
+
+
+std::unique_ptr<AstNode> parseVariableDeclaration(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::TypeKeyword)
+		throw std::runtime_error("Expected type" + tokens[pos].value);
+
+	pos++;
+	if (tokens[pos].type != AstNodeType::Variable)
+		throw std::runtime_error("Expected variable name" + tokens[pos].value);
+	
+	symbolTable.declareVariable(tokens[pos].value);
+
+	std::string varName = tokens[pos].value;
+	
+	if (tokens[pos + 1].type == AstNodeType::Assign)
+		return parseAssignment(tokens, symbolTable, pos);
+	
+	pos++;
+
+	if (tokens[pos].type != AstNodeType::Semicolon)
+		throw std::runtime_error("Expected ';' after declaration" + tokens[pos].value);
+
+	pos++;
+
+	return nullptr;
+}
+
+std::unique_ptr<AstNode> parseReturnStatement(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::ReturnStatement)
+		throw std::runtime_error("Expected return");
+
+	pos++;
+
+	auto node = std::make_unique<ReturnStatementNode>();
+
+	// return;
+	if (tokens[pos].type == AstNodeType::Semicolon)
+	{
+		pos++;
+		return node;
+	}
+
+	std::vector<Token> expr;
+
+	while (tokens[pos].type != AstNodeType::Semicolon)
+	{
+		if (tokens[pos].type == AstNodeType::EndOfExpression)
+			throw std::runtime_error("Missing ';' after return");
+
+		expr.push_back(tokens[pos++]);
+	}
+
+	pos++;
+	expr.push_back(Token("", AstNodeType::EndOfExpression));
+
+	node->expr = parseExpression(expr, symbolTable);
+
+	return node;
+}
+
+
+std::unique_ptr<AstNode> parseFunctionCall(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::Variable)
+		throw std::runtime_error("Expected function name");
+
+	auto node = std::make_unique<CallExpressionNode>();
+	node->name = tokens[pos].value;
+
+	pos++;
+
+	if (tokens[pos].type != AstNodeType::OpenParen)
+		throw std::runtime_error("Expected (");
+
+	pos++;
+
+	while (tokens[pos].type != AstNodeType::CloseParen)
+	{
+		std::vector<Token> expr;
+
+		int depth = 0;
+
+		while (!(tokens[pos].type == AstNodeType::Comma && depth == 0) &&
+				!(tokens[pos].type == AstNodeType::CloseParen && depth == 0))
+		{
+			if (tokens[pos].type == AstNodeType::OpenParen) depth++;
+			if (tokens[pos].type == AstNodeType::CloseParen) depth--;
+
+			expr.push_back(tokens[pos++]);
+		}
+
+		expr.push_back(Token("", AstNodeType::EndOfExpression));
+
+		node->args.push_back(parseExpression(expr, symbolTable));
+
+		if (tokens[pos].type == AstNodeType::Comma)
+			pos++;
+	}
+
+	pos++;
+
+	if (tokens[pos].type == AstNodeType::Semicolon)
+		pos++;
+
+	return node;
+}
+
+
+std::unique_ptr<AstNode> parseStatement(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (static_cast<size_t>(pos) >= tokens.size())
+		throw std::runtime_error("Unexpected end of input");
+
+	switch (tokens[pos].type)
+	{
+		case AstNodeType::If:
+			return parseIfStatement(tokens, symbolTable, pos);
+		case AstNodeType::TypeKeyword:
+			return parseVariableDeclaration(tokens, symbolTable, pos);
+		case AstNodeType::Variable:
+		{
+			if (static_cast<size_t>(pos + 1) < tokens.size() && tokens[pos + 1].type == AstNodeType::OpenParen)
+				return parseFunctionCall(tokens, symbolTable, pos);
+
+			if (static_cast<size_t>(pos + 1) < tokens.size() && tokens[pos + 1].type == AstNodeType::Assign)
+				return parseAssignment(tokens, symbolTable, pos);
+			break;
+		}
+		case AstNodeType::OpenBrace:
+			return parseBlock(tokens, symbolTable, pos);
+		case AstNodeType::While:
+			return parseWhileLoop(tokens, symbolTable, pos);
+		case AstNodeType::ReturnStatement:
+		{
+			if (!isInsideFunction)
+				throw std::runtime_error("return outside of function");
+			return parseReturnStatement(tokens, symbolTable, pos);
+		}
+		default:
+			break;
+	}
+	std::vector<Token> expr;
+	while (static_cast<size_t>(pos) < tokens.size() && tokens[pos].type != AstNodeType::Semicolon)
+		expr.push_back(tokens[pos++]);
+
+	if (static_cast<size_t>(pos) >= tokens.size())
+		throw std::runtime_error("Missing ';'");
+	expr.push_back(Token("", AstNodeType::EndOfExpression));
+	pos++;
+	return parseExpression(expr, symbolTable);
+}
+
+std::unique_ptr<AstNode> parseBlock(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	auto block = std::make_unique<BlockStatementNode>();
+
+	if (tokens[pos].type != AstNodeType::OpenBrace)
+		throw std::runtime_error("Expected { " + tokens[pos].value);
+
+	pos++;
+
+	symbolTable.enterScope();
+
+	while (tokens[pos].type != AstNodeType::CloseBrace)
+	{
+		if (tokens[pos].type == AstNodeType::EndOfExpression)
+			throw std::runtime_error("Expected } " + tokens[pos].value);
+
+		auto stmt = parseStatement(tokens, symbolTable, pos);
+
+		if (stmt)
+			block->statements.push_back(std::move(stmt));
+	}
+
+	symbolTable.exitScope();
+
+	pos++;
+
+	return block;
+}
+
+
+std::unique_ptr<AstNode> parseFunction(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	if (tokens[pos].type != AstNodeType::FunctionDecl)
+		throw std::runtime_error("Expected keyword \"Func\" " + tokens[pos].value);
+
+	pos++;
+	if (tokens[pos].type != AstNodeType::TypeKeyword)
+		throw std::runtime_error("Expected a type " + tokens[pos].value);
+	
+	auto func = std::make_unique<FunctionNode>();
+	if (tokens[pos].value == "int")
+		func->returnType = ReturnType::Int;
+	else if (tokens[pos].value == "void")
+		func->returnType = ReturnType::Void;
+	else
+		throw std::runtime_error("Expected a type " + tokens[pos].value);
+
+	pos++;
+
+	if (tokens[pos].type != AstNodeType::Variable)
+		throw std::runtime_error("Expected function name " + tokens[pos].value);
+
+	func->name = tokens[pos].value;
+
+	pos++;
+
+	if (tokens[pos].type != AstNodeType::OpenParen)
+		throw std::runtime_error("Expected ( "  + tokens[pos].value);
+
+	pos++;
+
+	while (tokens[pos].type != AstNodeType::CloseParen)
+	{
+		if (tokens[pos].type != AstNodeType::TypeKeyword)
+			throw std::runtime_error("Expected parameter type " + tokens[pos].value);
+
+		std::string type = tokens[pos].value;
+		pos++;
+
+		if (tokens[pos].type != AstNodeType::Variable)
+			throw std::runtime_error("Expected parameter name " + tokens[pos].value);
+
+		std::string name = tokens[pos].value;
+		pos++;
+
+		func->params.push_back({type, name});
+
+		if (tokens[pos].type == AstNodeType::Comma)
+			pos++;
+		else if (tokens[pos].type != AstNodeType::CloseParen)
+			throw std::runtime_error("Expected ',' or ')' " + tokens[pos].value);
+
+	}
+
+	pos++;
+
+	symbolTable.enterScope();
+	for (const auto& p : func->params)
+	{
+		if (symbolTable.isDeclared(p.name))
+			throw std::runtime_error("Duplicate parameter: " + p.name);
+
+		symbolTable.declareVariable(p.name);
+	}
+
+	if (tokens[pos].type != AstNodeType::OpenBrace)
+		throw std::runtime_error("Expected { for function body " + tokens[pos].value);
+	
+	isInsideFunction = 1;
+	func->body = std::unique_ptr<BlockStatementNode>(
+		static_cast<BlockStatementNode*>(parseBlock(tokens, symbolTable, pos).release())
+	);
+	isInsideFunction = 0;
+	symbolTable.exitScope();
+	for (auto& stmt : func->body->statements)
+	{
+		if (stmt->type == AstNodeType::ReturnStatement)
+		{
+			func->returnStatementNode = static_cast<ReturnStatementNode*>(stmt.get());
+			break;
+		}
+	}
+	return func;
+}
+
+std::vector<std::unique_ptr<AstNode>> parser(std::vector<Token>& tokens, SymbolTable& symbolTable, int& pos)
+{
+	std::vector<std::unique_ptr<AstNode>> functionEntryPoints;
+
+	std::unordered_set<std::string> functionNames;
+
+	while (tokens[pos].type != AstNodeType::EndOfExpression)
+	{
+		int oldPos = pos;
+
+		if (tokens[pos].type != AstNodeType::FunctionDecl)
+			throw std::runtime_error("Only functionEntryPoints allowed at global scope");
+
+		auto func = parseFunction(tokens, symbolTable, pos);
+
+		FunctionNode* fn = dynamic_cast<FunctionNode*>(func.get());
+
+		if (!fn)
+			throw std::runtime_error("Internal parser error");
+
+		if (functionNames.find(fn->name) != functionNames.end())
+			throw std::runtime_error("Multiple definition of function: " + fn->name);
+
+		if (fn->returnType == ReturnType::Void && fn->returnStatementNode != nullptr &&
+				fn->returnStatementNode->expr != nullptr)
+			throw std::runtime_error("Void function cannot return a value");
+	
+		if (fn->returnType == ReturnType::Int && fn->returnStatementNode == nullptr)
+			throw std::runtime_error("Function should return a value");
+
+		functionNames.insert(fn->name);
+
+		functionEntryPoints.push_back(std::move(func));
+
+		if (pos == oldPos)
+			throw std::runtime_error("Parser stuck (no progress)");
+	}
+
+	return functionEntryPoints;
+}

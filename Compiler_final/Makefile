@@ -1,28 +1,34 @@
-# Lexer + tokenizer + parser + sym + vm; outputs: compiler, vm
-CXX      ?= g++
-CXXFLAGS ?= -std=c++17 -Wall -Wextra -Iinclude
+COMPILER_BINARY = Compiler
+VIRTUAL_MACHINE_BINARY = VirtualMachine
 
-SRC := src/lexer.cpp src/tokenizer.cpp src/parser.cpp src/SymbolTable.cpp src/VM.cpp
-OBJ := $(SRC:.cpp=.o)
+CXX = c++
+CXXFLAGS = -Wall -Wextra -std=c++17 -Iinclude
 
-.PHONY: all clean run test
+SRC_DIR = src
 
-all: compiler vm
+COMPILER_SRC = $(SRC_DIR)/main-compiler.cpp $(SRC_DIR)/lexer.cpp $(SRC_DIR)/tokenizer.cpp $(SRC_DIR)/parser.cpp $(SRC_DIR)/virtual-machine.cpp $(SRC_DIR)/symbol-table.cpp
+COMPILER_OBJ = $(COMPILER_SRC:.cpp=.o)
 
-src/%.o: src/%.cpp
+VM_SRC = $(SRC_DIR)/main-virtual-machine.cpp $(SRC_DIR)/virtual-machine.cpp $(SRC_DIR)/symbol-table.cpp
+VM_OBJ = $(VM_SRC:.cpp=.o)
+
+all: $(COMPILER_BINARY) $(VIRTUAL_MACHINE_BINARY)
+
+$(COMPILER_BINARY): $(COMPILER_OBJ)
+	$(CXX) $(CXXFLAGS) $(COMPILER_OBJ) -o $(COMPILER_BINARY)
+
+$(VIRTUAL_MACHINE_BINARY): $(VM_OBJ)
+	$(CXX) $(CXXFLAGS) $(VM_OBJ) -o $(VIRTUAL_MACHINE_BINARY)
+
+%.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-compiler: $(OBJ) src/mainCompiler.o
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-vm: $(OBJ) src/mainVM.o
-	$(CXX) $(CXXFLAGS) -o $@ $^
-
-run: compiler
-	./compiler
-
-test: vm
-	./vm
-
 clean:
-	rm -f $(OBJ) src/mainCompiler.o src/mainVM.o compiler vm
+	rm -f $(COMPILER_OBJ) $(VM_OBJ)
+
+fclean: clean
+	rm -f $(COMPILER_BINARY) $(VIRTUAL_MACHINE_BINARY)
+
+re: fclean all
+
+.PHONY: all clean fclean re

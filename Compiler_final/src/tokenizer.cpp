@@ -1,105 +1,80 @@
-#include "Token.hpp"
-#include <cctype>
-#include <unordered_map>
+#include "../include/token.hpp"
 
-namespace vl {
-
-static bool id0(char c) { return std::isalpha(static_cast<unsigned char>(c)) || c == '_'; }
-
-static Tok word(const std::string& w) {
-    static const std::unordered_map<std::string, Tok> kw = {
-        {"var", Tok::kw_var},     {"fun", Tok::kw_fun},         {"if", Tok::kw_if},
-        {"else", Tok::kw_else},   {"while", Tok::kw_while},     {"return", Tok::kw_return},
-        {"print", Tok::kw_print},
-    };
-    auto it = kw.find(w);
-    return it == kw.end() ? Tok::id : it->second;
+bool isNumericLiteral(const std::string &word)
+{
+	for (size_t i = 0; i < word.length(); i++)
+	{
+		if (!std::isdigit(word[i]))
+			return false;
+	}
+	return true;
 }
 
-static Tok punct(const std::string& s) {
-    if (s == "(") {
-        return Tok::lpar;
-    }
-    if (s == ")") {
-        return Tok::rpar;
-    }
-    if (s == "{") {
-        return Tok::lbra;
-    }
-    if (s == "}") {
-        return Tok::rbra;
-    }
-    if (s == ";") {
-        return Tok::semi;
-    }
-    if (s == ",") {
-        return Tok::comma;
-    }
-    if (s == "+") {
-        return Tok::plus;
-    }
-    if (s == "-") {
-        return Tok::minus;
-    }
-    if (s == "*") {
-        return Tok::star;
-    }
-    if (s == "/") {
-        return Tok::slash;
-    }
-    if (s == "=") {
-        return Tok::assign;
-    }
-    if (s == "==") {
-        return Tok::eq;
-    }
-    if (s == "!=") {
-        return Tok::ne;
-    }
-    if (s == "<") {
-        return Tok::lt;
-    }
-    if (s == "<=") {
-        return Tok::le;
-    }
-    if (s == ">") {
-        return Tok::gt;
-    }
-    if (s == ">=") {
-        return Tok::ge;
-    }
-    if (s == "&&") {
-        return Tok::land;
-    }
-    if (s == "||") {
-        return Tok::lor;
-    }
-    if (s == "!") {
-        return Tok::bang;
-    }
-    return Tok::bad;
+bool isIdentifier(const std::string &word)
+{
+	for (size_t i = 0; i < word.length(); i++)
+	{
+		if (!std::isalnum(word[i]))
+			return false;
+	}
+	if (!std::isalpha(word[0]))
+		return false;
+	return true;
 }
 
-std::vector<Token> tokenize(const std::string& src) {
-    std::vector<Token> out;
-    int el = 1;
-    int ec = 1;
-
-    for (const auto& r : scan_raw(src)) {
-        el = r.line;
-        ec = r.col;
-        Tok k = Tok::bad;
-        if (!r.t.empty() && std::isdigit(static_cast<unsigned char>(r.t[0]))) {
-            k = Tok::num;
-        } else if (!r.t.empty() && (id0(r.t[0]))) {
-            k = word(r.t);
-        } else {
-            k = punct(r.t);
-        }
-        out.push_back(Token{k, r.t, r.line, r.col});
-    }
-    out.push_back(Token{Tok::eof, "", el, ec});
-    return out;
+bool isComparisonOperator(const std::string& word)
+{
+	if (word == "<" || word == ">" || word == "<=" || word == ">=" || word == "!=" || word == "==")
+		return true;
+	return false;
 }
 
-}  // namespace vl
+std::vector<Token> tokenizer(const std::vector<std::string> &words)
+{
+	std::vector<Token> tokens;
+	for (size_t i = 0; i < words.size(); i++)
+	{
+		if (words[i].empty())
+			continue;
+		else if (words[i] == "int" || words[i] == "void")
+			tokens.push_back(Token(words[i], AstNodeType::TypeKeyword));
+		else if (words[i] == "return")
+			tokens.push_back(Token(words[i], AstNodeType::ReturnStatement));
+		else if (words[i] == "Func")
+			tokens.push_back(Token(words[i], AstNodeType::FunctionDecl));
+		else if (words[i] == "if")
+			tokens.push_back(Token(words[i], AstNodeType::If));
+		else if (words[i] == "else")
+			tokens.push_back(Token(words[i], AstNodeType::Else));
+		else if (words[i] == "while")
+			tokens.push_back(Token(words[i], AstNodeType::While));
+		else if (isNumericLiteral(words[i]))
+			tokens.push_back(Token(words[i], AstNodeType::Number));
+		else if (isIdentifier(words[i]))
+			tokens.push_back(Token(words[i], AstNodeType::Variable));
+		else if (words[i] == "(")
+			tokens.push_back(Token(words[i], AstNodeType::OpenParen));
+		else if (words[i] == ")")
+			tokens.push_back(Token(words[i], AstNodeType::CloseParen));
+		else if (words[i] == "+" || words[i] == "-" || words[i] == "*" || words[i] == "/")
+			tokens.push_back(Token(words[i], AstNodeType::BinaryOperator));
+		else if (isComparisonOperator(words[i]))
+			tokens.push_back(Token(words[i], AstNodeType::Comparison));
+		else if (words[i] == "=")
+			tokens.push_back(Token(words[i], AstNodeType::Assign));
+		else if (words[i] == "!")
+			tokens.push_back(Token(words[i], AstNodeType::Not));
+		else if (words[i] == ";")
+			tokens.push_back(Token(words[i], AstNodeType::Semicolon));
+		else if (words[i] == "{")
+			tokens.push_back(Token(words[i], AstNodeType::OpenBrace));
+		else if (words[i] == "}")
+			tokens.push_back(Token(words[i], AstNodeType::CloseBrace));
+		else if (words[i] == ",")
+			tokens.push_back(Token(words[i], AstNodeType::Comma));
+		else
+			throw std::runtime_error("unexpected token " + words[i]);
+	}
+	tokens.push_back(Token("", AstNodeType::EndOfExpression));
+	return tokens;
+}
